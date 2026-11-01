@@ -88,6 +88,21 @@ fn dwg_block_name<'a>(
     &record.name
 }
 
+/// ACAD stores every paper-space BLOCK_HEADER under the bare `*Paper_Space`;
+/// only the BLOCK marker carries the unique `*Paper_SpaceN` (see
+/// [`dwg_block_name`]). A suffixed header loads as an anonymous block, and
+/// ACAD's layout switching then mis-swaps names after the first switch.
+fn dwg_block_header_name<'a>(
+    document: &'a CadDocument,
+    record: &'a BlockRecord,
+    active: Handle,
+) -> &'a str {
+    if record.is_paper_space() {
+        return "*Paper_Space";
+    }
+    dwg_block_name(document, record, active)
+}
+
 // ── Public struct ───────────────────────────────────────────────────
 
 /// Writes all DWG object records (entities + table entries + objects)
@@ -2193,8 +2208,8 @@ impl<'a> DwgObjectWriter<'a> {
             extra,
         );
 
-        // Paper-space names stay unique; anonymous names use their native base.
-        let dwg_name = dwg_block_name(self.document, record, self.paper_space_block_handle);
+        // Paper-space headers share the bare name; anonymous names use their native base.
+        let dwg_name = dwg_block_header_name(self.document, record, self.paper_space_block_handle);
         self.writer.write_variable_text(dwg_name);
         // Xref dependant
         self.write_xref_dependant_bit();

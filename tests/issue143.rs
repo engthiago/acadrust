@@ -73,22 +73,39 @@ fn record_names(doc: &CadDocument, objects: &DwgObjectReader) -> HashMap<Handle,
         .collect()
 }
 
-fn assert_marker_names(
+fn marker_names(doc: &CadDocument, objects: &DwgObjectReader) -> HashMap<Handle, String> {
+    doc.block_records
+        .iter()
+        .map(|block| {
+            let (code, mut reader) = objects
+                .read_record_at(
+                    objects
+                        .offset_for(block.block_entity_handle.value())
+                        .unwrap() as usize,
+                )
+                .unwrap();
+            objects.read_common_entity_data(&mut reader, code);
+            let name = reader.read_variable_text();
+            assert!(reader.check_error().is_ok());
+            (block.handle, name)
+        })
+        .collect()
+}
+
+/// ACAD's encoding: every paper-space BLOCK_HEADER is the bare `*Paper_Space`
+/// and its BLOCK marker carries the unique `*Paper_SpaceN`; every other block
+/// has the same name in both.
+fn assert_native_names(
     doc: &CadDocument,
-    objects: &DwgObjectReader,
-    names: &HashMap<Handle, String>,
+    headers: &HashMap<Handle, String>,
+    markers: &HashMap<Handle, String>,
 ) {
     for block in doc.block_records.iter() {
-        let (code, mut reader) = objects
-            .read_record_at(
-                objects
-                    .offset_for(block.block_entity_handle.value())
-                    .unwrap() as usize,
-            )
-            .unwrap();
-        objects.read_common_entity_data(&mut reader, code);
-        assert_eq!(reader.read_variable_text(), names[&block.handle]);
-        assert!(reader.check_error().is_ok());
+        if block.is_paper_space() {
+            assert_eq!(headers[&block.handle], "*Paper_Space");
+        } else {
+            assert_eq!(markers[&block.handle], headers[&block.handle]);
+        }
     }
 }
 
@@ -116,6 +133,7 @@ fn paper_space_names_and_anonymous_bases_are_consistent() {
             doc.header.paper_space_block_handle = active;
             let objects = objects(&doc);
             let names = record_names(&doc, &objects);
+            let markers = marker_names(&doc, &objects);
             let regular: Vec<_> = doc
                 .block_records
                 .iter()
@@ -123,22 +141,22 @@ fn paper_space_names_and_anonymous_bases_are_consistent() {
                 .collect();
             let unique: HashSet<_> = regular
                 .iter()
-                .map(|block| names[&block.handle].to_uppercase())
+                .map(|block| markers[&block.handle].to_uppercase())
                 .collect();
             assert_eq!(
                 unique.len(),
                 regular.len(),
-                "duplicate names in {version:?}"
+                "duplicate markers in {version:?}"
             );
-            assert_eq!(names[&active], "*Paper_Space");
+            assert_eq!(markers[&active], "*Paper_Space");
             if active != old_paper {
-                assert_eq!(names[&old_paper], old_active_name);
+                assert_eq!(markers[&old_paper], old_active_name);
             }
             for name in ["*U42", "*U99"] {
                 let block = doc.block_records.get(name).unwrap();
                 assert_eq!(names[&block.handle], "*U");
             }
-            assert_marker_names(&doc, &objects, &names);
+            assert_native_names(&doc, &names, &markers);
 
             let (code, mut reader) = objects
                 .read_record_at(
@@ -194,7 +212,8 @@ fn changing_active_layout_preserves_cached_entity_owners_and_layout_links() {
     for _ in 0..2 {
         let objects = objects(&loaded);
         let names = record_names(&loaded, &objects);
-        assert_marker_names(&loaded, &objects, &names);
+        let markers = marker_names(&loaded, &objects);
+        assert_native_names(&loaded, &names, &markers);
         loaded = roundtrip(&loaded);
         assert_eq!(loaded.header.paper_space_block_handle, active);
         assert_eq!(
